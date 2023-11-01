@@ -1,0 +1,15 @@
+[Unit]
+Description=Read-Only Sysroot Migration
+Documentation=https://ostreedev.github.io/ostree
+ConditionPathExists=!/var/lib/.ostree-readonly-sysroot
+ConditionPathExists=/run/ostree-booted
+RequiresMountsFor=/sysroot /boot
+ConditionPathIsReadWrite=/sysroot
+ 
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/ostree-readonly-sysroot-migration
+RemainAfterExit=yes
+ 
+[Install]
+WantedBy=multi-user.target
