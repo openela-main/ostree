@@ -1,0 +1,298 @@
+From 00697be199c08242e54c02e4557e20834030aaf3 Mon Sep 17 00:00:00 2001
+From: Nikita Dubrovskii <nikita@linux.ibm.com>
+Date: Mon, 4 Apr 2022 16:09:50 +0200
+Subject: [PATCH 1/5] s390x: generate sd-boot at its own partition
+
+Signed-off-by: Nikita Dubrovskii <nikita@linux.ibm.com>
+---
+ src/libostree/ostree-bootloader-zipl.c | 36 ++++++++++++++++++++++----
+ src/libostree/s390x-se-luks-gencpio    |  4 +--
+ 2 files changed, 33 insertions(+), 7 deletions(-)
+
+diff --git a/src/libostree/ostree-bootloader-zipl.c b/src/libostree/ostree-bootloader-zipl.c
+index 02c10826c3..fe024d8046 100644
+--- a/src/libostree/ostree-bootloader-zipl.c
++++ b/src/libostree/ostree-bootloader-zipl.c
+@@ -21,12 +21,17 @@
+ #include "ostree-bootloader-zipl.h"
+ #include "ostree-deployment-private.h"
+ #include "otutil.h"
++#include <sys/mount.h>
++#include <sys/stat.h>
+ #include <string.h>
+ 
+-#define SECURE_EXECUTION_BOOT_IMAGE     "/boot/sd-boot"
++#define SECURE_EXECUTION_PARTITION      "/dev/disk/by-label/se"
++#define SECURE_EXECUTION_MOUNTPOINT     "/sysroot/se"
++#define SECURE_EXECUTION_BOOT_IMAGE     SECURE_EXECUTION_MOUNTPOINT "/sd-boot"
+ #define SECURE_EXECUTION_HOSTKEY_PATH   "/etc/se-hostkeys/"
+ #define SECURE_EXECUTION_HOSTKEY_PREFIX "ibm-z-hostkey"
+ #define SECURE_EXECUTION_LUKS_ROOT_KEY  "/etc/luks/root"
++#define SECURE_EXECUTION_LUKS_BOOT_KEY  "/etc/luks/boot"
+ #define SECURE_EXECUTION_LUKS_CONFIG    "/etc/crypttab"
+ #define SECURE_EXECUTION_RAMDISK_TOOL   PKGLIBEXECDIR "/s390x-se-luks-gencpio"
+ 
+@@ -67,6 +72,25 @@ _ostree_bootloader_zipl_get_name (OstreeBootloader *bootloader)
+   return "zipl";
+ }
+ 
++static gboolean
++_ostree_secure_execution_mount(GError **error)
++{
++  const char *device = realpath (SECURE_EXECUTION_PARTITION, NULL);
++  if (device == NULL)
++    return glnx_throw_errno_prefix(error, "s390x SE: resolving %s", SECURE_EXECUTION_PARTITION);
++  if (mount (device, SECURE_EXECUTION_MOUNTPOINT, "ext4", 0, NULL) < 0)
++    return glnx_throw_errno_prefix (error, "s390x SE: Mounting %s", device);
++  return TRUE;
++}
++
++static gboolean
++_ostree_secure_execution_umount(GError **error)
++{
++  if (umount (SECURE_EXECUTION_MOUNTPOINT) < 0)
++    return glnx_throw_errno_prefix (error, "s390x SE: Unmounting %s", SECURE_EXECUTION_MOUNTPOINT);
++  return TRUE;
++}
++
+ static gboolean
+ _ostree_bootloader_zipl_write_config (OstreeBootloader  *bootloader,
+                                           int                bootversion,
+@@ -152,8 +176,8 @@ _ostree_secure_execution_get_bls_config (OstreeBootloaderZipl *self,
+ static gboolean
+ _ostree_secure_execution_luks_key_exists (void)
+ {
+-  return (access(SECURE_EXECUTION_LUKS_ROOT_KEY, F_OK) == 0 &&
+-          access(SECURE_EXECUTION_LUKS_CONFIG, F_OK) == 0);
++  return (access(SECURE_EXECUTION_LUKS_CONFIG, F_OK) == 0 &&
++    (access(SECURE_EXECUTION_LUKS_ROOT_KEY, F_OK) == 0 || access(SECURE_EXECUTION_LUKS_BOOT_KEY, F_OK) == 0));
+ }
+ 
+ static gboolean
+@@ -250,7 +274,7 @@ static gboolean
+ _ostree_secure_execution_call_zipl (GError **error)
+ {
+   int status = 0;
+-  const char *const zipl_argv[] = {"zipl", "-V", "-t", "/boot", "-i", SECURE_EXECUTION_BOOT_IMAGE, NULL};
++  const char *const zipl_argv[] = {"zipl", "-V", "-t", SECURE_EXECUTION_MOUNTPOINT, "-i", SECURE_EXECUTION_BOOT_IMAGE, NULL};
+   if (!g_spawn_sync (NULL, (char**)zipl_argv, NULL, G_SPAWN_SEARCH_PATH,
+                        NULL, NULL, NULL, NULL, &status, error))
+     return glnx_prefix_error(error, "s390x SE: spawning zipl");
+@@ -274,9 +298,11 @@ _ostree_secure_execution_enable (OstreeBootloaderZipl *self,
+   g_autofree gchar* options = NULL;
+ 
+   gboolean rc =
++      _ostree_secure_execution_mount (error) &&
+       _ostree_secure_execution_get_bls_config (self, bootversion, &vmlinuz, &initramfs, &options, cancellable, error) &&
+       _ostree_secure_execution_generate_sdboot (vmlinuz, initramfs, options, keys, error) &&
+-      _ostree_secure_execution_call_zipl (error);
++      _ostree_secure_execution_call_zipl (error) &&
++      _ostree_secure_execution_umount (error);
+ 
+   return rc;
+ }
+diff --git a/src/libostree/s390x-se-luks-gencpio b/src/libostree/s390x-se-luks-gencpio
+index f0ad24eb32..7d62258a31 100755
+--- a/src/libostree/s390x-se-luks-gencpio
++++ b/src/libostree/s390x-se-luks-gencpio
+@@ -12,11 +12,11 @@ gzip -cd ${old_initrd} | cpio -imd --quiet
+ 
+ # Adding LUKS root key and crypttab config
+ mkdir -p etc/luks
+-cp -f /etc/luks/root etc/luks/
++cp -f /etc/luks/* etc/luks/
+ cp -f /etc/crypttab etc/
+ 
+ # Creating new initramdisk image
+-find . | cpio --quiet -H newc -o | gzip -9 -n >> ${new_initrd}
++find . -mindepth 1 | cpio --quiet -H newc -o | gzip -9 -n >> ${new_initrd}
+ 
+ # Cleanup
+ rm -rf ${workdir}
+
+From 91e71022ebc2422f278c285e55f4c88d7f572eeb Mon Sep 17 00:00:00 2001
+From: Nikita Dubrovskii <nikita@linux.ibm.com>
+Date: Mon, 23 May 2022 17:28:54 +0200
+Subject: [PATCH 2/5] s390x: ensure SecureExecution is enabled before sd-boot
+ generation
+
+Signed-off-by: Nikita Dubrovskii <nikita@linux.ibm.com>
+---
+ src/libostree/ostree-bootloader-zipl.c | 24 ++++++++++++++++++------
+ 1 file changed, 18 insertions(+), 6 deletions(-)
+
+diff --git a/src/libostree/ostree-bootloader-zipl.c b/src/libostree/ostree-bootloader-zipl.c
+index fe024d8046..348dfe036d 100644
+--- a/src/libostree/ostree-bootloader-zipl.c
++++ b/src/libostree/ostree-bootloader-zipl.c
+@@ -25,6 +25,7 @@
+ #include <sys/stat.h>
+ #include <string.h>
+ 
++#define SECURE_EXECUTION_SYSFS_FLAG     "/sys/firmware/uv/prot_virt_guest"
+ #define SECURE_EXECUTION_PARTITION      "/dev/disk/by-label/se"
+ #define SECURE_EXECUTION_MOUNTPOINT     "/sysroot/se"
+ #define SECURE_EXECUTION_BOOT_IMAGE     SECURE_EXECUTION_MOUNTPOINT "/sd-boot"
+@@ -109,6 +110,14 @@ _ostree_bootloader_zipl_write_config (OstreeBootloader  *bootloader,
+   return TRUE;
+ }
+ 
++static gboolean _ostree_secure_execution_is_enabled (GCancellable *cancellable) {
++  gsize len = 0;
++  g_autofree char *data = glnx_file_get_contents_utf8_at (-1, SECURE_EXECUTION_SYSFS_FLAG, &len, cancellable, NULL);
++  if (!data)
++    return FALSE;
++  return strstr (data, "1") != NULL;
++}
++
+ static gboolean
+ _ostree_secure_execution_get_keys (GPtrArray **keys,
+                                    GCancellable *cancellable,
+@@ -329,12 +338,15 @@ _ostree_bootloader_zipl_post_bls_sync (OstreeBootloader  *bootloader,
+     return TRUE;
+ 
+   /* Try with Secure Execution */
+-  g_autoptr(GPtrArray) keys = NULL;
+-  if (!_ostree_secure_execution_get_keys (&keys, cancellable, error))
+-    return FALSE;
+-  if (keys && keys->len)
+-    return _ostree_secure_execution_enable (self, bootversion, keys, cancellable, error);
+-
++  if ( _ostree_secure_execution_is_enabled (cancellable) )
++    {
++      g_autoptr(GPtrArray) keys = NULL;
++      if (!_ostree_secure_execution_get_keys (&keys, cancellable, error))
++        return FALSE;
++      if (!keys || keys->len == 0)
++          return glnx_throw (error, "s390x SE: no keys");
++      return _ostree_secure_execution_enable (self, bootversion, keys, cancellable, error);
++    }
+   /* Fallback to non-SE setup */
+   const char *const zipl_argv[] = {"zipl", NULL};
+   int estatus;
+
+From 2e2854239189044cc1ffd100959b7c7bfe92b0f9 Mon Sep 17 00:00:00 2001
+From: Nikita Dubrovskii <nikita@linux.ibm.com>
+Date: Tue, 24 May 2022 19:30:35 +0200
+Subject: [PATCH 3/5] s390x: fail on error during reading of SecureExecution
+ sysfs flag
+
+---
+ src/libostree/ostree-bootloader-zipl.c | 24 ++++++++++++++++++------
+ 1 file changed, 18 insertions(+), 6 deletions(-)
+
+diff --git a/src/libostree/ostree-bootloader-zipl.c b/src/libostree/ostree-bootloader-zipl.c
+index 348dfe036d..87b9b67aec 100644
+--- a/src/libostree/ostree-bootloader-zipl.c
++++ b/src/libostree/ostree-bootloader-zipl.c
+@@ -110,12 +110,21 @@ _ostree_bootloader_zipl_write_config (OstreeBootloader  *bootloader,
+   return TRUE;
+ }
+ 
+-static gboolean _ostree_secure_execution_is_enabled (GCancellable *cancellable) {
+-  gsize len = 0;
+-  g_autofree char *data = glnx_file_get_contents_utf8_at (-1, SECURE_EXECUTION_SYSFS_FLAG, &len, cancellable, NULL);
++static gboolean _ostree_secure_execution_is_enabled (gboolean *out_enabled,
++                                                     GCancellable *cancellable,
++                                                     GError **error)
++{
++  *out_enabled = FALSE;
++  glnx_autofd int fd = -1;
++  if (!ot_openat_ignore_enoent (AT_FDCWD, SECURE_EXECUTION_SYSFS_FLAG, &fd, error))
++    return FALSE;
++  if (fd == -1)
++    return TRUE; //ENOENT --> SecureExecution is disabled
++  g_autofree char *data = glnx_fd_readall_utf8 (fd, NULL, cancellable, error);
+   if (!data)
+     return FALSE;
+-  return strstr (data, "1") != NULL;
++  *out_enabled = strstr (data, "1") != NULL;
++  return TRUE;
+ }
+ 
+ static gboolean
+@@ -338,13 +347,16 @@ _ostree_bootloader_zipl_post_bls_sync (OstreeBootloader  *bootloader,
+     return TRUE;
+ 
+   /* Try with Secure Execution */
+-  if ( _ostree_secure_execution_is_enabled (cancellable) )
++  gboolean se_enabled = FALSE;
++  if ( !_ostree_secure_execution_is_enabled (&se_enabled, cancellable, error))
++    return FALSE;
++  if (se_enabled)
+     {
+       g_autoptr(GPtrArray) keys = NULL;
+       if (!_ostree_secure_execution_get_keys (&keys, cancellable, error))
+         return FALSE;
+       if (!keys || keys->len == 0)
+-          return glnx_throw (error, "s390x SE: no keys");
++        return glnx_throw (error, "s390x SE: no keys");
+       return _ostree_secure_execution_enable (self, bootversion, keys, cancellable, error);
+     }
+   /* Fallback to non-SE setup */
+
+From 89ed46e8a9f584e2a6c1966fbf4c99f0fe51424e Mon Sep 17 00:00:00 2001
+From: Nikita Dubrovskii <nikita@linux.ibm.com>
+Date: Fri, 27 May 2022 09:13:18 +0200
+Subject: [PATCH 4/5] s390x: do not unpack existing initrd, just append LUKS
+ keys to its copy
+
+Signed-off-by: Nikita Dubrovskii <nikita@linux.ibm.com>
+---
+ src/libostree/s390x-se-luks-gencpio | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/src/libostree/s390x-se-luks-gencpio b/src/libostree/s390x-se-luks-gencpio
+index 7d62258a31..f444198a40 100755
+--- a/src/libostree/s390x-se-luks-gencpio
++++ b/src/libostree/s390x-se-luks-gencpio
+@@ -4,19 +4,19 @@ set -euo pipefail
+ 
+ old_initrd=$1
+ new_initrd=$2
++currdir=$PWD
+ 
+-# Unpacking existing initramdisk
++# Copying existing initramdisk
++cp ${old_initrd} ${new_initrd}
++
++# Appending LUKS root keys and crypttab config to the end of initrd
+ workdir=$(mktemp -d -p /tmp se-initramfs-XXXXXX)
+ cd ${workdir}
+-gzip -cd ${old_initrd} | cpio -imd --quiet
+-
+-# Adding LUKS root key and crypttab config
+ mkdir -p etc/luks
+ cp -f /etc/luks/* etc/luks/
+ cp -f /etc/crypttab etc/
+-
+-# Creating new initramdisk image
+ find . -mindepth 1 | cpio --quiet -H newc -o | gzip -9 -n >> ${new_initrd}
+ 
+ # Cleanup
++cd ${currdir}
+ rm -rf ${workdir}
+
+From 2c8d5b95c7f2fee90e73bdd9222e002c44e797b7 Mon Sep 17 00:00:00 2001
+From: Nikita Dubrovskii <nikita@linux.ibm.com>
+Date: Thu, 23 Jun 2022 15:54:04 +0200
+Subject: [PATCH 5/5] s390x: rename sd-boot to sdboot
+
+Signed-off-by: Nikita Dubrovskii <nikita@linux.ibm.com>
+---
+ src/libostree/ostree-bootloader-zipl.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/libostree/ostree-bootloader-zipl.c b/src/libostree/ostree-bootloader-zipl.c
+index 87b9b67aec..0ff350f942 100644
+--- a/src/libostree/ostree-bootloader-zipl.c
++++ b/src/libostree/ostree-bootloader-zipl.c
+@@ -28,7 +28,7 @@
+ #define SECURE_EXECUTION_SYSFS_FLAG     "/sys/firmware/uv/prot_virt_guest"
+ #define SECURE_EXECUTION_PARTITION      "/dev/disk/by-label/se"
+ #define SECURE_EXECUTION_MOUNTPOINT     "/sysroot/se"
+-#define SECURE_EXECUTION_BOOT_IMAGE     SECURE_EXECUTION_MOUNTPOINT "/sd-boot"
++#define SECURE_EXECUTION_BOOT_IMAGE     SECURE_EXECUTION_MOUNTPOINT "/sdboot"
+ #define SECURE_EXECUTION_HOSTKEY_PATH   "/etc/se-hostkeys/"
+ #define SECURE_EXECUTION_HOSTKEY_PREFIX "ibm-z-hostkey"
+ #define SECURE_EXECUTION_LUKS_ROOT_KEY  "/etc/luks/root"

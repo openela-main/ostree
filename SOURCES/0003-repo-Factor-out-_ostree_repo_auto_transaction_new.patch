@@ -1,0 +1,82 @@
+From 4a997ae08605ebe6ca02d9f422082f954e667a6c Mon Sep 17 00:00:00 2001
+From: Simon McVittie <smcv@collabora.com>
+Date: Sat, 30 Apr 2022 12:20:11 +0100
+Subject: [PATCH 3/6] repo: Factor out _ostree_repo_auto_transaction_new()
+
+This will allow the direct allocation in
+ostree_repo_prepare_transaction() to be replaced with a call to this
+function, avoiding breaking encapsulation.
+
+Signed-off-by: Simon McVittie <smcv@collabora.com>
+(cherry picked from commit 540e60c3e3ace66dd4e6cf825488fc918260a642)
+---
+ src/libostree/ostree-repo-private.h |  4 ++++
+ src/libostree/ostree-repo.c         | 32 ++++++++++++++++++++++++-----
+ 2 files changed, 31 insertions(+), 5 deletions(-)
+
+diff --git a/src/libostree/ostree-repo-private.h b/src/libostree/ostree-repo-private.h
+index 988c2179..96253e77 100644
+--- a/src/libostree/ostree-repo-private.h
++++ b/src/libostree/ostree-repo-private.h
+@@ -554,4 +554,8 @@ GType _ostree_repo_auto_transaction_get_type (void);
+ 
+ G_DEFINE_AUTOPTR_CLEANUP_FUNC (OstreeRepoAutoTransaction, _ostree_repo_auto_transaction_unref);
+ 
++/* Internal function to break a circular dependency:
++ * should not be made into public API, even if the rest is */
++OstreeRepoAutoTransaction *_ostree_repo_auto_transaction_new (OstreeRepo *repo);
++
+ G_END_DECLS
+diff --git a/src/libostree/ostree-repo.c b/src/libostree/ostree-repo.c
+index a27591b3..f6bffd60 100644
+--- a/src/libostree/ostree-repo.c
++++ b/src/libostree/ostree-repo.c
+@@ -709,6 +709,32 @@ ostree_repo_auto_lock_cleanup (OstreeRepoAutoLock *auto_lock)
+     }
+ }
+ 
++/**
++ * _ostree_repo_auto_transaction_new:
++ * @repo: (not nullable): an #OsreeRepo object
++ * @cancellable: Cancellable
++ * @error: a #GError
++ *
++ * Return a guard for a transaction in @repo.
++ *
++ * Do not call this function outside the OstreeRepo transaction implementation.
++ * Use _ostree_repo_auto_transaction_start() instead.
++ *
++ * Returns: (transfer full): an #OstreeRepoAutoTransaction guard on success,
++ * %NULL otherwise.
++ */
++OstreeRepoAutoTransaction *
++_ostree_repo_auto_transaction_new (OstreeRepo *repo)
++{
++  g_assert (repo != NULL);
++
++  OstreeRepoAutoTransaction *txn = g_malloc(sizeof(OstreeRepoAutoTransaction));
++  txn->atomic_refcount = 1;
++  txn->repo = g_object_ref (repo);
++
++  return g_steal_pointer (&txn);
++}
++
+ /**
+  * _ostree_repo_auto_transaction_start:
+  * @repo: (not nullable): an #OsreeRepo object
+@@ -730,11 +756,7 @@ _ostree_repo_auto_transaction_start (OstreeRepo     *repo,
+   if (!ostree_repo_prepare_transaction (repo, NULL, cancellable, error))
+     return NULL;
+ 
+-  OstreeRepoAutoTransaction *txn = g_malloc(sizeof(OstreeRepoAutoTransaction));
+-  txn->atomic_refcount = 1;
+-  txn->repo = g_object_ref (repo);
+-
+-  return g_steal_pointer (&txn);
++  return _ostree_repo_auto_transaction_new (repo);
+ }
+ 
+ /**
+-- 
+2.31.1
+

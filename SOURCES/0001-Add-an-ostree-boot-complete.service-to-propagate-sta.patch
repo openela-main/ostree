@@ -1,0 +1,374 @@
+From a6d45dc165e48e2a463880ebb90f34c2b9d3c4ce Mon Sep 17 00:00:00 2001
+From: Colin Walters <walters@verbum.org>
+Date: Fri, 22 Apr 2022 18:46:28 -0400
+Subject: [PATCH 1/6] Add an `ostree-boot-complete.service` to propagate
+ staging failures
+
+Quite a while ago we added staged deployments, which solved
+a bunch of issues around the `/etc` merge.  However...a persistent
+problem since then is that any failures in that process that
+happened in the *previous* boot are not very visible.
+
+We ship custom code in `rpm-ostree status` to query the previous
+journal.  But that has a few problems - one is that on systems
+that have been up a while, that failure message may even get
+rotated out.  And second, some systems may not even have a persistent
+journal at all.
+
+A general thing we do in e.g. Fedora CoreOS testing is to check
+for systemd unit failures.  We do that both in our automated tests,
+and we even ship code that displays them on ssh logins.  And beyond
+that obviously a lot of other projects do the same; it's easy via
+`systemctl --failed`.
+
+So to make failures more visible, change our `ostree-finalize-staged.service`
+to have an internal wrapper around the process that "catches" any
+errors, and copies the error message into a file in `/boot/ostree`.
+
+Then, a new `ostree-boot-complete.service` looks for this file on
+startup and re-emits the error message, and fails.
+
+It also deletes the file.  The rationale is to avoid *continually*
+warning.  For example we need to handle the case when an upgrade
+process creates a new staged deployment.  Now, we could change the
+ostree core code to delete the warning file when that happens instead,
+but this is trying to be a conservative change.
+
+This should make failures here much more visible as is.
+---
+ Makefile-boot.am                             |  2 +
+ Makefile-ostree.am                           |  1 +
+ src/boot/ostree-boot-complete.service        | 33 +++++++++++
+ src/libostree/ostree-cmdprivate.c            |  1 +
+ src/libostree/ostree-cmdprivate.h            |  1 +
+ src/libostree/ostree-impl-system-generator.c |  2 +
+ src/libostree/ostree-sysroot-deploy.c        | 62 ++++++++++++++++++--
+ src/libostree/ostree-sysroot-private.h       |  7 +++
+ src/libostree/ostree-sysroot.c               |  2 +
+ src/ostree/ot-admin-builtin-boot-complete.c  | 58 ++++++++++++++++++
+ src/ostree/ot-admin-builtins.h               |  1 +
+ src/ostree/ot-builtin-admin.c                |  3 +
+ tests/kolainst/destructive/staged-deploy.sh  | 12 ++++
+ 13 files changed, 181 insertions(+), 4 deletions(-)
+ create mode 100644 src/boot/ostree-boot-complete.service
+ create mode 100644 src/ostree/ot-admin-builtin-boot-complete.c
+
+diff --git a/Makefile-boot.am b/Makefile-boot.am
+index ec10a0d6..e42e5180 100644
+--- a/Makefile-boot.am
++++ b/Makefile-boot.am
+@@ -38,6 +38,7 @@ endif
+ if BUILDOPT_SYSTEMD
+ systemdsystemunit_DATA = src/boot/ostree-prepare-root.service \
+ 	src/boot/ostree-remount.service \
++	src/boot/ostree-boot-complete.service \
+ 	src/boot/ostree-finalize-staged.service \
+ 	src/boot/ostree-finalize-staged.path \
+ 	$(NULL)
+@@ -64,6 +65,7 @@ endif
+ EXTRA_DIST += src/boot/dracut/module-setup.sh \
+ 	src/boot/dracut/ostree.conf \
+ 	src/boot/mkinitcpio \
++	src/boot/ostree-boot-complete.service \
+ 	src/boot/ostree-prepare-root.service \
+ 	src/boot/ostree-finalize-staged.path \
+ 	src/boot/ostree-remount.service \
+diff --git a/Makefile-ostree.am b/Makefile-ostree.am
+index 82af1681..0fe2c5f8 100644
+--- a/Makefile-ostree.am
++++ b/Makefile-ostree.am
+@@ -70,6 +70,7 @@ ostree_SOURCES += \
+ 	src/ostree/ot-admin-builtin-diff.c \
+ 	src/ostree/ot-admin-builtin-deploy.c \
+ 	src/ostree/ot-admin-builtin-finalize-staged.c \
++	src/ostree/ot-admin-builtin-boot-complete.c \
+ 	src/ostree/ot-admin-builtin-undeploy.c \
+ 	src/ostree/ot-admin-builtin-instutil.c \
+ 	src/ostree/ot-admin-builtin-cleanup.c \
+diff --git a/src/boot/ostree-boot-complete.service b/src/boot/ostree-boot-complete.service
+new file mode 100644
+index 00000000..5c09fdc9
+--- /dev/null
++++ b/src/boot/ostree-boot-complete.service
+@@ -0,0 +1,33 @@
++# Copyright (C) 2022 Red Hat, Inc.
++#
++# This library is free software; you can redistribute it and/or
++# modify it under the terms of the GNU Lesser General Public
++# License as published by the Free Software Foundation; either
++# version 2 of the License, or (at your option) any later version.
++#
++# This library is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++# Lesser General Public License for more details.
++#
++# You should have received a copy of the GNU Lesser General Public
++# License along with this library. If not, see <https://www.gnu.org/licenses/>.
++
++[Unit]
++Description=OSTree Complete Boot
++Documentation=man:ostree(1)
++# For now, this is the only condition on which we start, but it's
++# marked as a triggering condition in case in the future we want
++# to do something else.
++ConditionPathExists=|/boot/ostree/finalize-failure.stamp
++RequiresMountsFor=/boot
++# Ensure that we propagate the failure into the current boot before
++# any further finalization attempts.
++Before=ostree-finalize-staged.service
++
++[Service]
++Type=oneshot
++# To write to /boot while keeping it read-only
++MountFlags=slave
++RemainAfterExit=yes
++ExecStart=/usr/bin/ostree admin boot-complete
+diff --git a/src/libostree/ostree-cmdprivate.c b/src/libostree/ostree-cmdprivate.c
+index c9a6e2e1..f6c114f4 100644
+--- a/src/libostree/ostree-cmdprivate.c
++++ b/src/libostree/ostree-cmdprivate.c
+@@ -51,6 +51,7 @@ ostree_cmd__private__ (void)
+     _ostree_repo_static_delta_delete,
+     _ostree_repo_verify_bindings,
+     _ostree_sysroot_finalize_staged,
++    _ostree_sysroot_boot_complete,
+   };
+ 
+   return &table;
+diff --git a/src/libostree/ostree-cmdprivate.h b/src/libostree/ostree-cmdprivate.h
+index 46452ebd..17f943c8 100644
+--- a/src/libostree/ostree-cmdprivate.h
++++ b/src/libostree/ostree-cmdprivate.h
+@@ -33,6 +33,7 @@ typedef struct {
+   gboolean (* ostree_static_delta_delete) (OstreeRepo *repo, const char *delta_id, GCancellable *cancellable, GError **error);
+   gboolean (* ostree_repo_verify_bindings) (const char *collection_id, const char *ref_name, GVariant *commit, GError **error);
+   gboolean (* ostree_finalize_staged) (OstreeSysroot *sysroot, GCancellable *cancellable, GError **error);
++  gboolean (* ostree_boot_complete) (OstreeSysroot *sysroot, GCancellable *cancellable, GError **error);
+ } OstreeCmdPrivateVTable;
+ 
+ /* Note this not really "public", we just export the symbol, but not the header */
+diff --git a/src/libostree/ostree-impl-system-generator.c b/src/libostree/ostree-impl-system-generator.c
+index 769f0cbd..92d71605 100644
+--- a/src/libostree/ostree-impl-system-generator.c
++++ b/src/libostree/ostree-impl-system-generator.c
+@@ -134,6 +134,8 @@ require_internal_units (const char *normal_dir,
+     return FALSE;
+   if (symlinkat (SYSTEM_DATA_UNIT_PATH "/ostree-finalize-staged.path", normal_dir_dfd, "multi-user.target.wants/ostree-finalize-staged.path") < 0)
+     return glnx_throw_errno_prefix (error, "symlinkat");
++  if (symlinkat (SYSTEM_DATA_UNIT_PATH "/ostree-boot-complete.service", normal_dir_dfd, "multi-user.target.wants/ostree-boot-complete.service") < 0)
++    return glnx_throw_errno_prefix (error, "symlinkat");
+ 
+   return TRUE;
+ #else
+diff --git a/src/libostree/ostree-sysroot-deploy.c b/src/libostree/ostree-sysroot-deploy.c
+index b7cc232f..fc5916d8 100644
+--- a/src/libostree/ostree-sysroot-deploy.c
++++ b/src/libostree/ostree-sysroot-deploy.c
+@@ -3255,10 +3255,10 @@ ostree_sysroot_stage_tree_with_options (OstreeSysroot     *self,
+ }
+ 
+ /* Invoked at shutdown time by ostree-finalize-staged.service */
+-gboolean
+-_ostree_sysroot_finalize_staged (OstreeSysroot *self,
+-                                 GCancellable  *cancellable,
+-                                 GError       **error)
++static gboolean
++_ostree_sysroot_finalize_staged_inner (OstreeSysroot *self,
++                                       GCancellable  *cancellable,
++                                       GError       **error)
+ {
+   /* It's totally fine if there's no staged deployment; perhaps down the line
+    * though we could teach the ostree cmdline to tell systemd to activate the
+@@ -3355,9 +3355,63 @@ _ostree_sysroot_finalize_staged (OstreeSysroot *self,
+   if (!ostree_sysroot_prepare_cleanup (self, cancellable, error))
+     return FALSE;
+ 
++  // Cleanup will have closed some FDs, re-ensure writability
++  if (!_ostree_sysroot_ensure_writable (self, error))
++    return FALSE;
++
+   return TRUE;
+ }
+ 
++/* Invoked at shutdown time by ostree-finalize-staged.service */
++gboolean
++_ostree_sysroot_finalize_staged (OstreeSysroot *self,
++                                 GCancellable  *cancellable,
++                                 GError       **error)
++{
++  g_autoptr(GError) finalization_error = NULL;
++  if (!_ostree_sysroot_ensure_boot_fd (self, error))
++    return FALSE;
++  if (!_ostree_sysroot_finalize_staged_inner (self, cancellable, &finalization_error))
++    {
++      g_autoptr(GError) writing_error = NULL;
++      g_assert_cmpint (self->boot_fd, !=, -1);
++      if (!glnx_file_replace_contents_at (self->boot_fd, _OSTREE_FINALIZE_STAGED_FAILURE_PATH, 
++                                           (guint8*)finalization_error->message, -1,
++                                           0, cancellable, &writing_error))
++        {
++          // We somehow failed to write the failure message...that's not great.  Maybe ENOSPC on /boot.
++          g_printerr ("Failed to write %s: %s\n", _OSTREE_FINALIZE_STAGED_FAILURE_PATH, writing_error->message);
++        }
++      g_propagate_error (error, g_steal_pointer (&finalization_error));
++      return FALSE;
++    }
++  return TRUE;
++}
++
++/* Invoked at bootup time by ostree-boot-complete.service */
++gboolean
++_ostree_sysroot_boot_complete (OstreeSysroot *self,
++                               GCancellable  *cancellable,
++                               GError       **error)
++{
++  if (!_ostree_sysroot_ensure_boot_fd (self, error))
++    return FALSE;
++
++  glnx_autofd int failure_fd = -1;
++  if (!ot_openat_ignore_enoent (self->boot_fd, _OSTREE_FINALIZE_STAGED_FAILURE_PATH, &failure_fd, error))
++    return FALSE;
++  // If we didn't find a failure log, then there's nothing to do right now.
++  // (Actually this unit shouldn't even be invoked, but we may do more in the future)
++  if (failure_fd == -1)
++    return TRUE;
++  g_autofree char *failure_data = glnx_fd_readall_utf8 (failure_fd, NULL, cancellable, error);
++  if (failure_data == NULL)
++    return glnx_prefix_error (error, "Reading from %s", _OSTREE_FINALIZE_STAGED_FAILURE_PATH);
++  // Remove the file; we don't want to continually error out.
++  (void) unlinkat (self->boot_fd, _OSTREE_FINALIZE_STAGED_FAILURE_PATH, 0);
++  return glnx_throw (error, "ostree-finalize-staged.service failed on previous boot: %s", failure_data);
++}
++
+ /**
+  * ostree_sysroot_deployment_set_kargs:
+  * @self: Sysroot
+diff --git a/src/libostree/ostree-sysroot-private.h b/src/libostree/ostree-sysroot-private.h
+index cb34eeb3..a49a406c 100644
+--- a/src/libostree/ostree-sysroot-private.h
++++ b/src/libostree/ostree-sysroot-private.h
+@@ -96,6 +96,9 @@ struct OstreeSysroot {
+ #define _OSTREE_SYSROOT_BOOT_INITRAMFS_OVERLAYS "ostree/initramfs-overlays"
+ #define _OSTREE_SYSROOT_INITRAMFS_OVERLAYS "boot/" _OSTREE_SYSROOT_BOOT_INITRAMFS_OVERLAYS
+ 
++// Relative to /boot, consumed by ostree-boot-complete.service
++#define _OSTREE_FINALIZE_STAGED_FAILURE_PATH "ostree/finalize-failure.stamp"
++
+ gboolean
+ _ostree_sysroot_ensure_writable (OstreeSysroot      *self,
+                                  GError            **error);
+@@ -142,6 +145,10 @@ gboolean
+ _ostree_sysroot_finalize_staged (OstreeSysroot *self,
+                                  GCancellable  *cancellable,
+                                  GError       **error);
++gboolean
++_ostree_sysroot_boot_complete (OstreeSysroot *self,
++                               GCancellable  *cancellable,
++                               GError       **error);
+ 
+ OstreeDeployment *
+ _ostree_sysroot_deserialize_deployment_from_variant (GVariant *v,
+diff --git a/src/libostree/ostree-sysroot.c b/src/libostree/ostree-sysroot.c
+index 266a2975..f083f950 100644
+--- a/src/libostree/ostree-sysroot.c
++++ b/src/libostree/ostree-sysroot.c
+@@ -356,6 +356,8 @@ _ostree_sysroot_ensure_writable (OstreeSysroot      *self,
+   ostree_sysroot_unload (self);
+   if (!ensure_sysroot_fd (self, error))
+     return FALSE;
++  if (!_ostree_sysroot_ensure_boot_fd (self, error))
++    return FALSE;
+ 
+   return TRUE;
+ }
+diff --git a/src/ostree/ot-admin-builtin-boot-complete.c b/src/ostree/ot-admin-builtin-boot-complete.c
+new file mode 100644
+index 00000000..6e1052f5
+--- /dev/null
++++ b/src/ostree/ot-admin-builtin-boot-complete.c
+@@ -0,0 +1,58 @@
++/*
++ * Copyright (C) 2022 Red Hat, Inc.
++ *
++ * SPDX-License-Identifier: LGPL-2.0+
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library. If not, see <https://www.gnu.org/licenses/>.
++ */
++
++#include "config.h"
++
++#include <stdlib.h>
++
++#include "ot-main.h"
++#include "ot-admin-builtins.h"
++#include "ot-admin-functions.h"
++#include "ostree.h"
++#include "otutil.h"
++
++#include "ostree-cmdprivate.h"
++
++static GOptionEntry options[] = {
++  { NULL }
++};
++
++gboolean
++ot_admin_builtin_boot_complete (int argc, char **argv, OstreeCommandInvocation *invocation, GCancellable *cancellable, GError **error)
++{
++  /* Just a sanity check; we shouldn't be called outside of the service though.
++   */
++  struct stat stbuf;
++  if (fstatat (AT_FDCWD, OSTREE_PATH_BOOTED, &stbuf, 0) < 0)
++    return TRUE;
++  // We must have been invoked via systemd which should have set up a mount namespace.
++  g_assert (getenv ("INVOCATION_ID"));
++
++  g_autoptr(GOptionContext) context = g_option_context_new ("");
++  g_autoptr(OstreeSysroot) sysroot = NULL;
++  if (!ostree_admin_option_context_parse (context, options, &argc, &argv,
++                                          OSTREE_ADMIN_BUILTIN_FLAG_SUPERUSER,
++                                          invocation, &sysroot, cancellable, error))
++    return FALSE;
++
++  if (!ostree_cmd__private__()->ostree_boot_complete (sysroot, cancellable, error))
++    return FALSE;
++
++  return TRUE;
++}
+diff --git a/src/ostree/ot-admin-builtins.h b/src/ostree/ot-admin-builtins.h
+index d32b617e..8d9451be 100644
+--- a/src/ostree/ot-admin-builtins.h
++++ b/src/ostree/ot-admin-builtins.h
+@@ -39,6 +39,7 @@ BUILTINPROTO(deploy);
+ BUILTINPROTO(cleanup);
+ BUILTINPROTO(pin);
+ BUILTINPROTO(finalize_staged);
++BUILTINPROTO(boot_complete);
+ BUILTINPROTO(unlock);
+ BUILTINPROTO(status);
+ BUILTINPROTO(set_origin);
+diff --git a/src/ostree/ot-builtin-admin.c b/src/ostree/ot-builtin-admin.c
+index e0d2a60c..af09a614 100644
+--- a/src/ostree/ot-builtin-admin.c
++++ b/src/ostree/ot-builtin-admin.c
+@@ -43,6 +43,9 @@ static OstreeCommand admin_subcommands[] = {
+   { "finalize-staged", OSTREE_BUILTIN_FLAG_NO_REPO | OSTREE_BUILTIN_FLAG_HIDDEN,
+     ot_admin_builtin_finalize_staged,
+     "Internal command to run at shutdown time" },
++  { "boot-complete", OSTREE_BUILTIN_FLAG_NO_REPO | OSTREE_BUILTIN_FLAG_HIDDEN,
++    ot_admin_builtin_boot_complete,
++    "Internal command to run at boot after an update was applied" },
+   { "init-fs", OSTREE_BUILTIN_FLAG_NO_REPO,
+      ot_admin_builtin_init_fs,
+     "Initialize a root filesystem" },

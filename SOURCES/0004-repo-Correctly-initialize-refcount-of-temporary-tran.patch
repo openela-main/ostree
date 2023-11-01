@@ -1,0 +1,39 @@
+From 51c7960bea081446ad217e9725408ce5cb531157 Mon Sep 17 00:00:00 2001
+From: Simon McVittie <smcv@collabora.com>
+Date: Sat, 30 Apr 2022 12:53:42 +0100
+Subject: [PATCH 4/6] repo: Correctly initialize refcount of temporary
+ transaction
+
+Previously, the reference count was left uninitialized as a result of
+bypassing the constructor, and the intended abort-on-error usually
+wouldn't have happened.
+
+Fixes: 8a9737a "repo/private: move OstreeRepoAutoTransaction to a boxed type"
+Resolves: https://github.com/ostreedev/ostree/issues/2592
+Signed-off-by: Simon McVittie <smcv@collabora.com>
+(cherry picked from commit 71304e854cdb344adb8b1ae7866929fbdde6c327)
+---
+ src/libostree/ostree-repo-commit.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/libostree/ostree-repo-commit.c b/src/libostree/ostree-repo-commit.c
+index 5b16be5b..dba98c32 100644
+--- a/src/libostree/ostree-repo-commit.c
++++ b/src/libostree/ostree-repo-commit.c
+@@ -1688,10 +1688,10 @@ ostree_repo_prepare_transaction (OstreeRepo     *self,
+   g_debug ("Preparing transaction in repository %p", self);
+ 
+   /* Set up to abort the transaction if we return early from this function.
+-   * This needs to be manually built here due to a circular dependency. */
+-  g_autoptr(OstreeRepoAutoTransaction) txn = g_malloc(sizeof(OstreeRepoAutoTransaction));
++   * We can't call _ostree_repo_auto_transaction_start() here, because that
++   * would be a circular dependency; use the lower-level version instead. */
++  g_autoptr(OstreeRepoAutoTransaction) txn = _ostree_repo_auto_transaction_new (self);
+   g_assert (txn != NULL);
+-  txn->repo = self;
+ 
+   memset (&self->txn.stats, 0, sizeof (OstreeRepoTransactionStats));
+ 
+-- 
+2.31.1
+
