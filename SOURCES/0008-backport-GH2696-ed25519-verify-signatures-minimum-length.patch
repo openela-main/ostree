@@ -1,0 +1,32 @@
+From 56820e54392efc5dd59032f8872aaf219190ad4f Mon Sep 17 00:00:00 2001
+From: Colin Walters <walters@verbum.org>
+Date: Thu, 14 Jul 2022 14:42:19 -0400
+Subject: [PATCH] sign/ed25519: Verify signatures are minimum length
+
+The ed25519 signature verification code does not
+check that the signature is a minimum/correct length.
+As a result, if the signature is too short, libsodium will end up
+reading a few bytes out of bounds.
+
+Reported-by: Demi Marie Obenour <demi@invisiblethingslab.com>
+Co-authored-by: Demi Marie Obenour <demi@invisiblethingslab.com>
+
+Closes: https://github.com/ostreedev/ostree/security/advisories/GHSA-gqf4-p3gv-g8vw
+---
+ src/libostree/ostree-sign-ed25519.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/libostree/ostree-sign-ed25519.c b/src/libostree/ostree-sign-ed25519.c
+index 809ffe8790..f271fd49e0 100644
+--- a/src/libostree/ostree-sign-ed25519.c
++++ b/src/libostree/ostree-sign-ed25519.c
+@@ -209,6 +209,9 @@ gboolean ostree_sign_ed25519_data_verify (OstreeSign *self,
+       g_autoptr (GVariant) child = g_variant_get_child_value (signatures, i);
+       g_autoptr (GBytes) signature = g_variant_get_data_as_bytes(child);
+ 
++      if (g_bytes_get_size (signature) != crypto_sign_BYTES)
++        return glnx_throw (error, "Invalid signature length of %" G_GSIZE_FORMAT " bytes, expected %" G_GSIZE_FORMAT, (gsize) g_bytes_get_size (signature), (gsize) crypto_sign_BYTES);
++
+       g_autofree char * hex = g_malloc0 (crypto_sign_PUBLICKEYBYTES*2 + 1);
+ 
+       g_debug("Read signature %d: %s", (gint)i, g_variant_print(child, TRUE));

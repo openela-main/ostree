@@ -1,0 +1,35 @@
+From dd194eca7272afa457541abb2d8c25f90c4f478a Mon Sep 17 00:00:00 2001
+From: Colin Walters <walters@verbum.org>
+Date: Mon, 28 Mar 2022 17:46:59 -0400
+Subject: [PATCH 6/6] deploy: Be a bit more verbose about SELinux bits
+
+Let's log when we don't find the expected CLI argument which
+will help debug things.
+
+(cherry picked from commit c58a4fe661d9d3bf2c515aa5605b1e094c0a62ca)
+---
+ src/libostree/ostree-sysroot-deploy.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/src/libostree/ostree-sysroot-deploy.c b/src/libostree/ostree-sysroot-deploy.c
+index a44721d8..404f336f 100644
+--- a/src/libostree/ostree-sysroot-deploy.c
++++ b/src/libostree/ostree-sysroot-deploy.c
+@@ -2926,9 +2926,12 @@ sysroot_finalize_selinux_policy (int deployment_dfd, GError **error)
+                           SEMODULE_HELP_ARGC, &exit_status, &stdout, error))
+     return FALSE;
+   if (!g_spawn_check_exit_status (exit_status, error))
+-    return FALSE;
++    return glnx_prefix_error (error, "failed to run semodule");
+   if (!strstr(stdout, "--rebuild-if-modules-changed"))
+-    return TRUE;
++    {
++      ot_journal_print (LOG_INFO, "semodule does not have --rebuild-if-modules-changed");
++      return TRUE;
++    }
+ 
+   static const gchar * const SEMODULE_REBUILD_ARGV[] = {
+     "semodule", "-N", "--rebuild-if-modules-changed"
+-- 
+2.31.1
+
