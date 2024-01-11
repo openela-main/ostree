@@ -1,4 +1,4 @@
-# Don't ship tests on RHEL > 7.
+# We haven't yet "productized" the tests
 %if 0%{?rhel} > 7
     %bcond_with tests
 %else
@@ -7,18 +7,11 @@
 
 Summary: Tool for managing bootable, immutable filesystem trees
 Name: ostree
-Version: 2023.1
-Release: 7%{?dist}
+Version: 2023.6
+Release: 1%{?dist}
 Source0: https://github.com/ostreedev/%{name}/releases/download/v%{version}/libostree-%{version}.tar.xz
 Source1: ostree-readonly-sysroot-migration
 Source2: ostree-readonly-sysroot-migration.service
-
-# https://github.com/ostreedev/ostree/pull/2874/commits/de6fddc6adee09a93901243dc7074090828a1912
-Patch0: 0001-commit-fix-ostree-deployment-on-64-bit-inode-fs.patch
-# https://github.com/ostreedev/ostree/pull/2946
-Patch1: 0001-Add-an-always-on-inode64-feature.patch
-# https://github.com/ostreedev/ostree/pull/2969
-Patch2: 0002-Backport-7f70614a1ac1950ebde3df0e26cc9ab1d72b2f1f.patch
 
 License: LGPLv2+
 URL: https://ostree.readthedocs.io/en/latest/
@@ -114,6 +107,7 @@ env NOCONFIGURE=1 ./autogen.sh
            --with-selinux \
            --with-curl \
            --with-openssl \
+           --with-composefs \
            %{?with_tests:--enable-installed-tests=exclusive} \
            --with-dracut=yesbutnoconf
 %make_build
@@ -148,7 +142,6 @@ find %{buildroot} -name '*.la' -delete
 %{_prefix}/lib/systemd/system-generators/ostree-system-generator
 %exclude %{_sysconfdir}/grub.d/*ostree
 %exclude %{_libexecdir}/libostree/grub2*
-%exclude %{_libexecdir}/libostree/ostree-trivial-httpd
 %{_prefix}/lib/tmpfiles.d/*
 %{_prefix}/lib/ostree
 # Moved in git master
@@ -181,20 +174,33 @@ find %{buildroot} -name '*.la' -delete
 %files tests
 %{_libexecdir}/installed-tests
 %{_datadir}/installed-tests
-%{_libexecdir}/libostree/ostree-trivial-httpd
 %endif
 
 %changelog
-* Wed Aug 08 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.1-7
-- Backport https://github.com/ostreedev/ostree/pull/2969/commits/402e04280b54c058ad47be99fe6a9326caf2ae00
-  Resolves: rhbz#2230111
+* Fri Aug 25 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.6-1
+- https://github.com/ostreedev/ostree/releases/tag/v2023.6
+  Resolves: rhbz#2234351
 
-* Mon Jul 24 2023 Colin Walters <walters@verbum.org> - 2023.1-6
-- Resolves: rhbz#2224105
+* Fri Aug 4 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.5-1
+- https://github.com/ostreedev/ostree/releases/tag/v2023.5
+  backport: https://github.com/ostreedev/ostree/commit/7f70614a1ac1950ebde3df0e26cc9ab1d72b2f1f
+  Resolves: rhbz#2221997
 
-* Wed Jul 19 2023 Colin Walters <walters@verbum.org> - 2023.1-4
-- Backport https://github.com/ostreedev/ostree/pull/2874/commits/de6fddc6adee09a93901243dc7074090828a1912
-  Resolves: rhbz#2224081
+* Wed Jun 28 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.4-2
+- Add patch https://github.com/ostreedev/ostree/pull/2901
+  Resolves: rhbz#2216810
+
+* Thu Jun 22 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.4-1
+- https://github.com/ostreedev/ostree/releases/tag/v2023.4
+  Resolves: rhbz#2216810
+
+* Tue Jun 13 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.3-1
+- https://github.com/ostreedev/ostree/releases/tag/v2023.3
+  Resolves: rhbz#2211487
+
+* Thu Mar 23 2023 Colin Walters <walters@verbum.org> - 2023.2-2
+- https://github.com/ostreedev/ostree/releases/tag/v2023.2
+  Resolves: rhbz#2172898
 
 * Thu Feb 23 2023 Colin Walters <walters@verbum.org> - 2023.1-2
 - Update to 2023.1
