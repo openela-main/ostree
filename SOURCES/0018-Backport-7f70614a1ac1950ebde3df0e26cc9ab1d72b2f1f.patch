@@ -1,0 +1,27 @@
+From 3443baa6e63b36d169f57027d7e80df614592c8e Mon Sep 17 00:00:00 2001
+From: Joseph Marrero <jmarrero@redhat.com>
+Date: Fri, 4 Aug 2023 16:09:20 -0400
+Subject: [PATCH] Backport: 7f70614a1ac1950ebde3df0e26cc9ab1d72b2f1f
+
+---
+ src/libostree/ostree-sysroot-deploy.c | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/src/libostree/ostree-sysroot-deploy.c b/src/libostree/ostree-sysroot-deploy.c
+index 2454a587..4d6d796e 100644
+--- a/src/libostree/ostree-sysroot-deploy.c
++++ b/src/libostree/ostree-sysroot-deploy.c
+@@ -1613,9 +1613,8 @@ static void *
+ sync_in_thread (void *ptr)
+ {
+   SyncData *syncdata = ptr;
+-  // Ensure that the caller is blocked waiting
+-  g_mutex_lock (&syncdata->mutex);
+   sync ();
++  g_mutex_lock (&syncdata->mutex);
+   // Signal success
+   syncdata->success = true;
+   g_cond_broadcast (&syncdata->cond);
+-- 
+2.41.0
+

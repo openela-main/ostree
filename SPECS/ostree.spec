@@ -8,7 +8,7 @@
 Summary: Tool for managing bootable, immutable filesystem trees
 Name: ostree
 Version: 2022.2
-Release: 7%{?dist}
+Release: 8%{?dist}
 Source0: https://github.com/ostreedev/%{name}/releases/download/v%{version}/libostree-%{version}.tar.xz
 License: LGPLv2+
 URL: https://ostree.readthedocs.io/en/latest/
@@ -28,6 +28,7 @@ Patch8: 0001-Support-overlayfs-whiteouts-on-checkout.patch
 # Patches for https://bugzilla.redhat.com/show_bug.cgi?id=2224102
 Patch16: 0016-commit-fix-ostree-deployment-on-64-bit-inode-fs.patch
 Patch17: 0017-Add-an-always-on-inode64-feature.patch
+Patch18: 0018-Backport-7f70614a1ac1950ebde3df0e26cc9ab1d72b2f1f.patch
 
 BuildRequires: make
 BuildRequires: git
@@ -179,8 +180,12 @@ find %{buildroot} -name '*.la' -delete
 %endif
 
 %changelog
+* Tue Aug 08 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2022.2-8
+- Backport for https://github.com/ostreedev/ostree/commit/7f70614a1ac1950ebde3df0e26cc9ab1d72b2f1f
+- Resolves: rhbz#2229895
+
 * Thu Jul 20 2023 Colin Walters <walters@verbum.org> - 2022.2-7
-- Backport for https://bugzilla.redhat.com/show_bug.cgi?id=2224107
+- Backport for https://bugzilla.redhat.com/show_bug.cgi?id=2224102
 
 * Fri Oct 14 2022 Colin Walters <walters@verbum.org> - 2022.2-6
 - Backport https://github.com/ostreedev/ostree/commit/0085494e350c72599fc5c0e00422885d80b3c660
