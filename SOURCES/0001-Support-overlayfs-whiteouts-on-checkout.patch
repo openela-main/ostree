@@ -1,0 +1,515 @@
+From 0085494e350c72599fc5c0e00422885d80b3c660 Mon Sep 17 00:00:00 2001
+From: Miguel Angel Ajo <majopela@redhat.com>
+Date: Mon, 19 Sep 2022 17:15:24 +0200
+Subject: [PATCH] Support overlayfs whiteouts on checkout
+
+Introduces an intermediate format for overlayfs storage, where
+.wh-ostree. prefixed files will be converted into char 0:0
+whiteout devices used by overlayfs to mark deletions across layers.
+
+The CI scripts now uses a volume for the scratch directories
+previously in /var/tmp otherwise we cannot create whiteout
+devices into an overlayfs mounted filesystem.
+
+Related-Issue: #2712
+(cherry picked from commit e234b630f85b97e48ecf45d5aaba9b1aa64e6b54)
+---
+ .github/workflows/tests.yml                |   8 +-
+ Makefile-tests.am                          |   1 +
+ bash/ostree                                |   1 +
+ man/ostree-checkout.xml                    |  11 ++
+ src/libostree/ostree-repo-checkout.c       | 129 ++++++++++++++++++++-
+ src/libostree/ostree-repo.h                |   5 +-
+ src/libostree/ostree-sysroot-deploy.c      |   2 +-
+ src/ostree/ot-builtin-checkout.c           |   7 +-
+ tests/archive-test.sh                      |   7 +-
+ tests/basic-test.sh                        |  29 ++++-
+ tests/kolainst/data-shared/libtest-core.sh |   7 ++
+ tests/libtest.sh                           |  52 ++++++++-
+ tests/test-admin-deploy-whiteouts.sh       |  42 +++++++
+ 13 files changed, 292 insertions(+), 9 deletions(-)
+ create mode 100755 tests/test-admin-deploy-whiteouts.sh
+
+--- a/Makefile-tests.am
++++ b/Makefile-tests.am
+@@ -107,6 +107,7 @@ _installed_or_uninstalled_test_scripts = \
+ 	tests/test-admin-deploy-nomerge.sh \
+ 	tests/test-admin-deploy-none.sh \
+ 	tests/test-admin-deploy-bootid-gc.sh \
++	tests/test-admin-deploy-whiteouts.sh \
+ 	tests/test-osupdate-dtb.sh \
+ 	tests/test-admin-instutil-set-kargs.sh \
+ 	tests/test-admin-upgrade-not-backwards.sh \
+diff --git a/bash/ostree b/bash/ostree
+index 46363315..6f3b86ea 100644
+--- a/bash/ostree
++++ b/bash/ostree
+@@ -249,6 +249,7 @@ _ostree_checkout() {
+         --union-identical
+         --user-mode -U
+         --whiteouts
++        --process-passthrough-whiteouts
+     "
+ 
+     local options_with_args="
+diff --git a/man/ostree-checkout.xml b/man/ostree-checkout.xml
+index 4ed53a91..8f7d4f9b 100644
+--- a/man/ostree-checkout.xml
++++ b/man/ostree-checkout.xml
+@@ -114,6 +114,17 @@ License along with this library. If not, see <https://www.gnu.org/licenses/>.
+                 </para></listitem>
+             </varlistentry>
+ 
++            <varlistentry>
++                <term><option>--process-passthrough-whiteouts</option></term>
++
++                <listitem><para>
++                   Enable overlayfs whiteout extraction into 0:0 character devices.
++                   Overlayfs whiteouts are encoded inside ostree as <literal>.ostree-wh.filename</literal>
++                   and extracted as 0:0 character devices. This is useful to carry
++                   container storage embedded into ostree.
++                </para></listitem>
++            </varlistentry>
++
+             <varlistentry>
+                 <term><option>--allow-noent</option></term>
+ 
+diff --git a/src/libostree/ostree-repo-checkout.c b/src/libostree/ostree-repo-checkout.c
+index 663292a9..7c7d0cc7 100644
+--- a/src/libostree/ostree-repo-checkout.c
++++ b/src/libostree/ostree-repo-checkout.c
+@@ -35,6 +35,8 @@
+ #define WHITEOUT_PREFIX ".wh."
+ #define OPAQUE_WHITEOUT_NAME ".wh..wh..opq"
+ 
++#define OVERLAYFS_WHITEOUT_PREFIX ".ostree-wh."
++
+ /* Per-checkout call state/caching */
+ typedef struct {
+   GString *path_buf; /* buffer for real path if filtering enabled */
+@@ -582,6 +584,117 @@ checkout_file_hardlink (OstreeRepo                          *self,
+   return TRUE;
+ }
+ 
++static gboolean
++_checkout_overlayfs_whiteout_at_no_overwrite (OstreeRepoCheckoutAtOptions    *options,
++                                              int                             destination_dfd,
++                                              const char                     *destination_name,
++                                              GFileInfo                      *file_info,
++                                              GVariant                       *xattrs,
++                                              gboolean                       *found_exant_file,
++                                              GCancellable                   *cancellable,
++                                              GError                        **error)
++{
++  if (found_exant_file != NULL)
++    *found_exant_file = FALSE;
++  guint32 file_mode = g_file_info_get_attribute_uint32 (file_info, "unix::mode");
++  if (mknodat(destination_dfd, destination_name, (file_mode & ~S_IFMT) | S_IFCHR, (dev_t)0) < 0)
++    {
++      if (errno == EEXIST && found_exant_file != NULL)
++        {
++          *found_exant_file = TRUE;
++          return TRUE;
++        }
++      return glnx_throw_errno_prefix (error, "Creating whiteout char device");
++    }
++  if (options->mode != OSTREE_REPO_CHECKOUT_MODE_USER)
++    {
++      if (xattrs != NULL &&
++          !glnx_dfd_name_set_all_xattrs(destination_dfd, destination_name, xattrs,
++                                          cancellable, error))
++          return glnx_throw_errno_prefix (error, "Setting xattrs for whiteout char device");
++
++      if (TEMP_FAILURE_RETRY(fchownat(destination_dfd, destination_name,
++                                      g_file_info_get_attribute_uint32 (file_info, "unix::uid"),
++                                      g_file_info_get_attribute_uint32 (file_info, "unix::gid"),
++                                      AT_SYMLINK_NOFOLLOW) < 0))
++          return glnx_throw_errno_prefix (error, "fchownat");
++      if (TEMP_FAILURE_RETRY (fchmodat (destination_dfd, destination_name, file_mode & ~S_IFMT, 0)) < 0)
++          return glnx_throw_errno_prefix (error, "fchmodat %s to 0%o", destination_name, file_mode & ~S_IFMT);
++    }
++
++  return TRUE;
++}
++
++static gboolean
++_checkout_overlayfs_whiteout_at (OstreeRepo                     *repo,
++                                 OstreeRepoCheckoutAtOptions    *options,
++                                 int                             destination_dfd,
++                                 const char                     *destination_name,
++                                 GFileInfo                      *file_info,
++                                 GVariant                       *xattrs,
++                                 GCancellable                   *cancellable,
++                                 GError                        **error)
++{
++  gboolean found_exant_file = FALSE;
++  if (!_checkout_overlayfs_whiteout_at_no_overwrite(options, destination_dfd, destination_name,
++                                                    file_info, xattrs,&found_exant_file,
++                                                    cancellable, error))
++    return FALSE;
++
++   if (!found_exant_file)
++    return TRUE;
++
++  guint32 uid = g_file_info_get_attribute_uint32 (file_info, "unix::uid");
++  guint32 gid = g_file_info_get_attribute_uint32 (file_info, "unix::gid");
++  guint32 file_mode = g_file_info_get_attribute_uint32 (file_info, "unix::mode");
++
++  struct stat dest_stbuf;
++
++  switch(options->overwrite_mode)
++    {
++      case OSTREE_REPO_CHECKOUT_OVERWRITE_NONE:
++        return FALSE;
++      case OSTREE_REPO_CHECKOUT_OVERWRITE_UNION_FILES:
++        if (!ot_ensure_unlinked_at (destination_dfd, destination_name, error))
++          return FALSE;
++        return _checkout_overlayfs_whiteout_at_no_overwrite(options, destination_dfd, destination_name,
++                                                   file_info, xattrs, NULL, cancellable, error);
++      case OSTREE_REPO_CHECKOUT_OVERWRITE_ADD_FILES:
++        return TRUE;
++
++      case OSTREE_REPO_CHECKOUT_OVERWRITE_UNION_IDENTICAL:
++        if (!glnx_fstatat(destination_dfd, destination_name, &dest_stbuf, AT_SYMLINK_NOFOLLOW,
++                          error))
++          return FALSE;
++        if (!(repo->disable_xattrs || repo->mode == OSTREE_REPO_MODE_BARE_USER_ONLY))
++          {
++            g_autoptr(GVariant) fs_xattrs;
++            if (!glnx_dfd_name_get_all_xattrs (destination_dfd, destination_name,
++                                               &fs_xattrs, cancellable, error))
++              return FALSE;
++            if (!g_variant_equal(fs_xattrs, xattrs))
++              return glnx_throw(error, "existing destination file %s xattrs don't match",
++                                destination_name);
++          }
++        if (options->mode != OSTREE_REPO_CHECKOUT_MODE_USER)
++          {
++            if (gid != dest_stbuf.st_gid)
++              return glnx_throw(error, "existing destination file %s does not match gid %d",
++                                destination_name, gid);
++
++            if (uid != dest_stbuf.st_uid)
++              return glnx_throw(error, "existing destination file %s does not match uid %d",
++                                destination_name, gid);
++
++            if ((file_mode & ALLPERMS) != (dest_stbuf.st_mode & ALLPERMS))
++              return glnx_throw(error, "existing destination file %s does not match mode %o",
++                                destination_name, file_mode);
++          }
++        break;
++    }
++    return TRUE;
++}
++
+ static gboolean
+ checkout_one_file_at (OstreeRepo                        *repo,
+                       OstreeRepoCheckoutAtOptions       *options,
+@@ -603,7 +716,8 @@ checkout_one_file_at (OstreeRepo                        *repo,
+ 
+   /* FIXME - avoid the GFileInfo here */
+   g_autoptr(GFileInfo) source_info = NULL;
+-  if (!ostree_repo_load_file (repo, checksum, NULL, &source_info, NULL,
++  g_autoptr(GVariant) source_xattrs = NULL;
++  if (!ostree_repo_load_file (repo, checksum, NULL, &source_info, &source_xattrs,
+                               cancellable, error))
+     return FALSE;
+ 
+@@ -623,6 +737,7 @@ checkout_one_file_at (OstreeRepo                        *repo,
+   const gboolean is_unreadable = (!is_symlink && (source_mode & S_IRUSR) == 0);
+   const gboolean is_whiteout = (!is_symlink && options->process_whiteouts &&
+                                 g_str_has_prefix (destination_name, WHITEOUT_PREFIX));
++  const gboolean is_overlayfs_whiteout = (!is_symlink && g_str_has_prefix (destination_name, OVERLAYFS_WHITEOUT_PREFIX));
+   const gboolean is_reg_zerosized = (!is_symlink && g_file_info_get_size (source_info) == 0);
+   const gboolean override_user_unreadable = (options->mode == OSTREE_REPO_CHECKOUT_MODE_USER && is_unreadable);
+ 
+@@ -643,6 +758,18 @@ checkout_one_file_at (OstreeRepo                        *repo,
+ 
+       need_copy = FALSE;
+     }
++  else if (is_overlayfs_whiteout && options->process_passthrough_whiteouts)
++    {
++      const char *name = destination_name + (sizeof (OVERLAYFS_WHITEOUT_PREFIX) - 1);
++
++      if (!name[0])
++        return glnx_throw (error, "Invalid empty overlayfs whiteout '%s'", name);
++
++      g_assert (name[0] != '/'); /* Sanity */
++
++      return _checkout_overlayfs_whiteout_at(repo, options, destination_dfd, name,
++                                             source_info, source_xattrs, cancellable, error);
++    }
+   else if (is_reg_zerosized || override_user_unreadable)
+     {
+       /* In https://github.com/ostreedev/ostree/commit/673cacd633f9d6b653cdea530657d3e780a41bbd we
+diff --git a/src/libostree/ostree-repo.h b/src/libostree/ostree-repo.h
+index 98571170..b3d7f986 100644
+--- a/src/libostree/ostree-repo.h
++++ b/src/libostree/ostree-repo.h
+@@ -989,8 +989,9 @@ typedef struct {
+   gboolean force_copy; /* Since: 2017.6 */
+   gboolean bareuseronly_dirs; /* Since: 2017.7 */
+   gboolean force_copy_zerosized; /* Since: 2018.9 */
+-  gboolean unused_bools[4];
+-  /* 4 byte hole on 64 bit */
++  gboolean process_passthrough_whiteouts;
++  gboolean unused_bools[3];
++  /* 3 byte hole on 64 bit */
+ 
+   const char *subpath;
+ 
+diff --git a/src/libostree/ostree-sysroot-deploy.c b/src/libostree/ostree-sysroot-deploy.c
+index 404f336f..5c98103b 100644
+--- a/src/libostree/ostree-sysroot-deploy.c
++++ b/src/libostree/ostree-sysroot-deploy.c
+@@ -641,7 +641,7 @@ checkout_deployment_tree (OstreeSysroot     *sysroot,
+     return FALSE;
+ 
+   /* Generate hardlink farm, then opendir it */
+-  OstreeRepoCheckoutAtOptions checkout_opts = { 0, };
++  OstreeRepoCheckoutAtOptions checkout_opts = { .process_passthrough_whiteouts = TRUE };
+   if (!ostree_repo_checkout_at (repo, &checkout_opts, osdeploy_dfd,
+                                 checkout_target_name, csum,
+                                 cancellable, error))
+diff --git a/src/ostree/ot-builtin-checkout.c b/src/ostree/ot-builtin-checkout.c
+index d69c8b0b..bfa43885 100644
+--- a/src/ostree/ot-builtin-checkout.c
++++ b/src/ostree/ot-builtin-checkout.c
+@@ -37,6 +37,7 @@ static gboolean opt_union;
+ static gboolean opt_union_add;
+ static gboolean opt_union_identical;
+ static gboolean opt_whiteouts;
++static gboolean opt_process_passthrough_whiteouts;
+ static gboolean opt_from_stdin;
+ static char *opt_from_file;
+ static gboolean opt_disable_fsync;
+@@ -77,6 +78,7 @@ static GOptionEntry options[] = {
+   { "union-add", 0, 0, G_OPTION_ARG_NONE, &opt_union_add, "Keep existing files/directories, only add new", NULL },
+   { "union-identical", 0, 0, G_OPTION_ARG_NONE, &opt_union_identical, "When layering checkouts, error out if a file would be replaced with a different version, but add new files and directories", NULL },
+   { "whiteouts", 0, 0, G_OPTION_ARG_NONE, &opt_whiteouts, "Process 'whiteout' (Docker style) entries", NULL },
++  { "process-passthrough-whiteouts", 0, 0, G_OPTION_ARG_NONE, &opt_process_passthrough_whiteouts, "Enable overlayfs whiteout extraction into char 0:0 devices", NULL },
+   { "allow-noent", 0, 0, G_OPTION_ARG_NONE, &opt_allow_noent, "Do nothing if specified path does not exist", NULL },
+   { "from-stdin", 0, 0, G_OPTION_ARG_NONE, &opt_from_stdin, "Process many checkouts from standard input", NULL },
+   { "from-file", 0, 0, G_OPTION_ARG_STRING, &opt_from_file, "Process many checkouts from input file", "FILE" },
+@@ -129,7 +131,8 @@ process_one_checkout (OstreeRepo           *repo,
+   if (opt_disable_cache || opt_whiteouts || opt_require_hardlinks ||
+       opt_union_add || opt_force_copy || opt_force_copy_zerosized ||
+       opt_bareuseronly_dirs || opt_union_identical ||
+-      opt_skiplist_file || opt_selinux_policy || opt_selinux_prefix)
++      opt_skiplist_file || opt_selinux_policy || opt_selinux_prefix ||
++      opt_process_passthrough_whiteouts)
+     {
+       OstreeRepoCheckoutAtOptions checkout_options = { 0, };
+ 
+@@ -162,6 +165,8 @@ process_one_checkout (OstreeRepo           *repo,
+         }
+       if (opt_whiteouts)
+         checkout_options.process_whiteouts = TRUE;
++      if (opt_process_passthrough_whiteouts)
++        checkout_options.process_passthrough_whiteouts = TRUE;
+       if (subpath)
+         checkout_options.subpath = subpath;
+ 
+diff --git a/tests/archive-test.sh b/tests/archive-test.sh
+index b6d84979..6b45790e 100644
+--- a/tests/archive-test.sh
++++ b/tests/archive-test.sh
+@@ -71,6 +71,11 @@ mkdir -p test-overlays
+ date > test-overlays/overlaid-file
+ $OSTREE commit ${COMMIT_ARGS} -b test-base --base test2 --owner-uid 42 --owner-gid 42 test-overlays/
+ $OSTREE ls -R test-base > ls.txt
+-assert_streq "$(wc -l < ls.txt)" 14
++if can_create_whiteout_devices; then
++    assert_streq "$(wc -l < ls.txt)" 17
++else
++    assert_streq "$(wc -l < ls.txt)" 14
++fi
++
+ assert_streq "$(grep '42.*42' ls.txt | wc -l)" 2
+ echo "ok commit overlay base"
+diff --git a/tests/basic-test.sh b/tests/basic-test.sh
+index 04506c3d..0878e6f6 100644
+--- a/tests/basic-test.sh
++++ b/tests/basic-test.sh
+@@ -19,7 +19,7 @@
+ 
+ set -euo pipefail
+ 
+-echo "1..$((87 + ${extra_basic_tests:-0}))"
++echo "1..$((89 + ${extra_basic_tests:-0}))"
+ 
+ CHECKOUT_U_ARG=""
+ CHECKOUT_H_ARGS="-H"
+@@ -1187,3 +1187,30 @@ if test "$(id -u)" != "0"; then
+ else
+     echo "ok # SKIP not run when root"
+ fi
++
++if ! skip_one_without_whiteouts_devices; then
++    cd ${test_tmpdir}
++    rm checkout-test2 -rf
++    $OSTREE checkout test2 checkout-test2
++
++    assert_not_has_file checkout-test2/whiteouts/whiteout
++    assert_not_has_file checkout-test2/whiteouts/whiteout2
++    assert_has_file checkout-test2/whiteouts/.ostree-wh.whiteout
++    assert_has_file checkout-test2/whiteouts/.ostree-wh.whiteout2
++
++    echo "ok checkout: no whiteout passthrough by default"
++fi
++
++if ! skip_one_without_whiteouts_devices; then
++    cd ${test_tmpdir}
++    rm checkout-test2 -rf
++    $OSTREE checkout --process-passthrough-whiteouts test2 checkout-test2
++
++    assert_not_has_file checkout-test2/whiteouts/.ostree-wh.whiteout
++    assert_not_has_file checkout-test2/whiteouts/.ostree-wh.whiteout2
++
++    assert_is_whiteout_device checkout-test2/whiteouts/whiteout
++    assert_is_whiteout_device checkout-test2/whiteouts/whiteout2
++
++    echo "ok checkout: whiteout with overlayfs passthrough processing"
++fi
+diff --git a/tests/libtest.sh b/tests/libtest.sh
+index 686f08dc..5830f210 100755
+--- a/tests/libtest.sh
++++ b/tests/libtest.sh
+@@ -148,6 +148,20 @@ if ! have_selinux_relabel; then
+ fi
+ echo done
+ 
++# whiteout char 0:0 devices can be created as regular users, but
++# cannot be created inside containers mounted via overlayfs
++can_create_whiteout_devices() {
++    mknod -m 000 ${test_tmpdir}/.test-whiteout c 0 0 || return 1
++    rm -f ${test_tmpdir}/.test-whiteout
++    return 0
++}
++
++echo -n checking for overlayfs whiteouts...
++if ! can_create_whiteout_devices; then
++    export OSTREE_NO_WHITEOUTS=1
++fi
++echo done
++
+ if test -n "${OT_TESTS_DEBUG:-}"; then
+     set -x
+ fi
+@@ -245,6 +259,15 @@ setup_test_repository () {
+     ln -s nonexistent baz/alink
+     mkdir baz/another/
+     echo x > baz/another/y
++
++    # if we are running inside a container we cannot test
++    # the overlayfs whiteout marker passthrough
++    if ! test -n "${OSTREE_NO_WHITEOUTS:-}"; then
++        mkdir whiteouts
++        touch whiteouts/.ostree-wh.whiteout
++        touch whiteouts/.ostree-wh.whiteout2
++        chmod 755 whiteouts/.ostree-wh.whiteout2
++    fi
+     umask "${oldumask}"
+ 
+     cd ${test_tmpdir}/files
+@@ -406,7 +429,7 @@ setup_os_repository () {
+     mkdir osdata
+     cd osdata
+     kver=3.6.0
+-    mkdir -p usr/bin ${bootdir} usr/lib/modules/${kver} usr/share usr/etc
++    mkdir -p usr/bin ${bootdir} usr/lib/modules/${kver} usr/share usr/etc usr/container/layers/abcd
+     kernel_path=${bootdir}/vmlinuz
+     initramfs_path=${bootdir}/initramfs.img
+     # the HMAC file is only in /usr/lib/modules
+@@ -449,6 +472,17 @@ EOF
+     mkdir -p usr/etc/testdirectory
+     echo "a default daemon file" > usr/etc/testdirectory/test
+ 
++    # if we are running inside a container we cannot test
++    # the overlayfs whiteout marker passthrough
++    if ! test -n "${OSTREE_NO_WHITEOUTS:-}"; then
++        # overlayfs whiteout passhthrough marker files
++        touch usr/container/layers/abcd/.ostree-wh.whiteout
++        chmod 400 usr/container/layers/abcd/.ostree-wh.whiteout
++
++        touch usr/container/layers/abcd/.ostree-wh.whiteout2
++        chmod 777 usr/container/layers/abcd/.ostree-wh.whiteout2
++    fi
++
+     ${CMD_PREFIX} ostree --repo=${test_tmpdir}/testos-repo commit ${bootable_flag} --add-metadata-string version=1.0.9 -b testos/buildmain/x86_64-runtime -s "Build"
+ 
+     # Ensure these commits have distinct second timestamps
+@@ -588,6 +622,22 @@ skip_without_user_xattrs () {
+     fi
+ }
+ 
++# Usage: if ! skip_one_without_whiteouts_devices; then ... more tests ...; fi
++skip_one_without_whiteouts_devices() {
++    if ! can_create_whiteout_devices; then
++        echo "ok # SKIP - this test requires whiteout device support (test outside containers)"
++        return 0
++    else
++        return 1
++    fi
++}
++
++skip_without_whiteouts_devices () {
++    if ! can_create_whiteout_devices; then
++        skip "this test requires whiteout device support (test outside containers)"
++    fi
++}
++
+ _have_systemd_and_libmount=''
+ have_systemd_and_libmount() {
+     if test "${_have_systemd_and_libmount}" = ''; then
+diff --git a/tests/test-admin-deploy-whiteouts.sh b/tests/test-admin-deploy-whiteouts.sh
+new file mode 100755
+index 00000000..66421949
+--- /dev/null
++++ b/tests/test-admin-deploy-whiteouts.sh
+@@ -0,0 +1,42 @@
++#!/bin/bash
++#
++# Copyright (C) 2022 Red Hat, Inc.
++#
++# SPDX-License-Identifier: LGPL-2.0+
++#
++# This library is free software; you can redistribute it and/or
++# modify it under the terms of the GNU Lesser General Public
++# License as published by the Free Software Foundation; either
++# version 2 of the License, or (at your option) any later version.
++#
++# This library is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++# Lesser General Public License for more details.
++#
++# You should have received a copy of the GNU Lesser General Public
++# License along with this library. If not, see <https://www.gnu.org/licenses/>.
++
++set -euox pipefail
++
++. $(dirname $0)/libtest.sh
++
++skip_without_whiteouts_devices
++
++# Exports OSTREE_SYSROOT so --sysroot not needed.
++setup_os_repository "archive" "syslinux"
++${CMD_PREFIX} ostree --repo=sysroot/ostree/repo pull-local --remote=testos testos-repo testos/buildmain/x86_64-runtime
++
++echo "1..3"
++${CMD_PREFIX} ostree admin deploy --os=testos --karg=root=LABEL=foo --karg=testkarg=1 testos:testos/buildmain/x86_64-runtime
++origdeployment=$(${CMD_PREFIX} ostree admin --sysroot=sysroot --print-current-dir)
++
++assert_is_whiteout_device "${origdeployment}"/usr/container/layers/abcd/whiteout
++echo "ok whiteout deployment"
++
++assert_not_has_file  "${origdeployment}"/usr/container/layers/abcd/.ostree-wh.whiteout
++echo "ok .ostree-wh.whiteout not created"
++
++assert_file_has_mode "${origdeployment}"/usr/container/layers/abcd/whiteout 400
++assert_file_has_mode "${origdeployment}"/usr/container/layers/abcd/whiteout2 777
++echo "ok whiteout permissions are preserved"
+-- 
+2.37.3
+
