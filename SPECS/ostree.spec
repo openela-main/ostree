@@ -7,11 +7,14 @@
 
 Summary: Tool for managing bootable, immutable filesystem trees
 Name: ostree
-Version: 2023.6
-Release: 1%{?dist}
+Version: 2024.4
+Release: 3%{?dist}
 Source0: https://github.com/ostreedev/%{name}/releases/download/v%{version}/libostree-%{version}.tar.xz
 Source1: ostree-readonly-sysroot-migration
 Source2: ostree-readonly-sysroot-migration.service
+
+# https://issues.redhat.com/browse/RHEL-27199
+Patch0: 0001-bootloader-grub2-Don-t-do-anything-if-we-have-static.patch
 
 License: LGPLv2+
 URL: https://ostree.readthedocs.io/en/latest/
@@ -177,6 +180,36 @@ find %{buildroot} -name '*.la' -delete
 %endif
 
 %changelog
+* Wed Feb 28 2024 Colin Walters <walters@verbum.org> - 2024.4-3
+- Backport
+  https://github.com/ostreedev/ostree/pull/3205/commits/e47b37096343efa3bea8295f3f44c4dc90cc04e2
+
+* Fri Feb 23 2024 Colin Walters <walters@verbum.org> - 2024.4-2
+- https://github.com/ostreedev/ostree/releases/tag/v2024.4
+
+* Wed Feb 14 2024 Colin Walters <walters@verbum.org> - 2024.3-2
+- https://github.com/ostreedev/ostree/releases/tag/v2024.3
+  Resolves: #RHEL-19419
+
+* Thu Feb 08 2024 Colin Walters <walters@verbum.org> - 2024.2-2
+- https://github.com/ostreedev/ostree/releases/tag/v2024.2
+
+* Sun Jan 21 2024 Colin Walters <walters@verbum.org> - 2024.1-2
+- https://github.com/ostreedev/ostree/releases/tag/v2024.1
+  Resolves: #RHEL-19419
+
+* Wed Dec 13 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.8-3
+- https://github.com/ostreedev/ostree/releases/tag/v2023.8
+  Resolves: #RHEL-19419
+
+* Wed Dec 06 2023 Colin Walters <walters@verbum.org> - 2023.8-2
+- https://github.com/ostreedev/ostree/releases/tag/v2023.8
+  Resolves: #RHEL-19419
+
+* Fri Oct 20 2023 Colin Walters <walters@verbum.org> - 2023.7-2
+- https://github.com/ostreedev/ostree/releases/tag/v2023.7
+  Resolves: #RHEL-14381
+
 * Fri Aug 25 2023 Joseph Marrero <jmarrero@fedoraproject.org> - 2023.6-1
 - https://github.com/ostreedev/ostree/releases/tag/v2023.6
   Resolves: rhbz#2234351

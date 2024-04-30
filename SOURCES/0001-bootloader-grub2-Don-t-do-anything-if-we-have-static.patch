@@ -1,0 +1,105 @@
+From e47b37096343efa3bea8295f3f44c4dc90cc04e2 Mon Sep 17 00:00:00 2001
+From: Colin Walters <walters@verbum.org>
+Date: Tue, 27 Feb 2024 13:14:16 -0500
+Subject: [PATCH] bootloader/grub2: Don't do anything if we have static configs
+
+This builds on top of https://github.com/coreos/bootupd/pull/609/commits/fa9924e4fe403c3751392c041cd98614a2cc3611
+(But in a very hacky way because we don't currently link to a JSON library)
+
+Basically, bootupd supports injecting static configs, and this
+is the currently least hacky way for us to detect this and understand
+that we shouldn't try to run `grub2-mkconfig`.
+
+A further patch I'd like to do here is also change the probing
+logic to gracefully no-op if `grub2-mkconfig` doesn't exist,
+but that has a bit more risk and involvement.
+---
+ src/libostree/ostree-bootloader-grub2.c      | 21 ++++++++++++
+ tests/kolainst/destructive/bootupd-static.sh | 36 ++++++++++++++++++++
+ 2 files changed, 57 insertions(+)
+ create mode 100755 tests/kolainst/destructive/bootupd-static.sh
+
+diff --git a/src/libostree/ostree-bootloader-grub2.c b/src/libostree/ostree-bootloader-grub2.c
+index e1ee7868..cbe7605d 100644
+--- a/src/libostree/ostree-bootloader-grub2.c
++++ b/src/libostree/ostree-bootloader-grub2.c
+@@ -26,6 +26,11 @@
+ 
+ #include <string.h>
+ 
++// Written by bootupd
++#define BOOTUPD_CONFIG "boot/bootupd-state.json"
++// Horrible hack, to avoid including a JSON parser we just grep for this
++#define BOOTUPD_CONFIG_STATIC_JSON_FRAGMENT "\"static-configs\""
++
+ /* Maintain backwards compatibility with legacy GRUB
+  * installations that might rely on the -16 suffix
+  * for real-mode booting.
+@@ -75,6 +80,22 @@ _ostree_bootloader_grub2_query (OstreeBootloader *bootloader, gboolean *out_is_a
+ {
+   OstreeBootloaderGrub2 *self = OSTREE_BOOTLOADER_GRUB2 (bootloader);
+ 
++  g_autoptr (GFile) bootupd_config
++      = g_file_resolve_relative_path (self->sysroot->path, BOOTUPD_CONFIG);
++  if (g_file_query_exists (bootupd_config, NULL))
++    {
++      g_autofree char *bootupd_config_contents = NULL;
++      if (!g_file_load_contents (bootupd_config, cancellable, &bootupd_config_contents, NULL, NULL,
++                                 error))
++        return glnx_prefix_error (error, "Failed to read bootupd config");
++      if (strstr (bootupd_config_contents, BOOTUPD_CONFIG_STATIC_JSON_FRAGMENT) != NULL)
++        {
++          g_debug ("Found static bootupd config");
++          *out_is_active = FALSE;
++          return TRUE;
++        }
++    }
++
+   /* Look for the BIOS path first */
+   if (g_file_query_exists (self->config_path_bios_1, NULL)
+       || g_file_query_exists (self->config_path_bios_2, NULL))
+diff --git a/tests/kolainst/destructive/bootupd-static.sh b/tests/kolainst/destructive/bootupd-static.sh
+new file mode 100755
+index 00000000..cf836813
+--- /dev/null
++++ b/tests/kolainst/destructive/bootupd-static.sh
+@@ -0,0 +1,36 @@
++#!/bin/bash
++set -xeuo pipefail
++
++. ${KOLA_EXT_DATA}/libinsttest.sh
++
++require_writable_sysroot
++prepare_tmpdir
++
++bootupd_state=/boot/bootupd-state.json
++mount -o remount,rw /boot
++if grep -qFe "\"static-configs\"" "${bootupd_state}"; then
++    echo "Host is using static configs already, overriding this"
++    jq 'del(.["static-configs"])' < "${bootupd_state}" > "${bootupd_state}".new
++    mv "${bootupd_state}.new" "${bootupd_state}"
++fi
++
++# Print the current value for reference, it's "none" on FCOS derivatives
++ostree config get sysroot.bootloader || true
++ostree config set sysroot.bootloader auto
++
++ostree admin deploy --stage "${host_commit}"
++systemctl stop ostree-finalize-staged.service
++used_bootloader=$(journalctl -u ostree-finalize-staged -o json MESSAGE_ID=dd440e3e549083b63d0efc7dc15255f1 | tail -1 | jq -r .OSTREE_BOOTLOADER)
++# We're verifying the legacy default now
++assert_streq "${used_bootloader}" "grub2"
++ostree admin undeploy 0
++
++# Now synthesize a bootupd config which uses static configs
++jq '. + {"static-configs": {}}' < "${bootupd_state}"  > "${bootupd_state}".new
++mv "${bootupd_state}.new" "${bootupd_state}"
++ostree admin deploy --stage "${host_commit}"
++systemctl stop ostree-finalize-staged.service
++used_bootloader=$(journalctl -u ostree-finalize-staged -o json MESSAGE_ID=dd440e3e549083b63d0efc7dc15255f1 | tail -1 | jq -r .OSTREE_BOOTLOADER)
++assert_streq "${used_bootloader}" "none"
++
++echo "ok bootupd static"
+-- 
+2.41.0
+
