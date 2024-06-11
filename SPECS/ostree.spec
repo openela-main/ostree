@@ -7,14 +7,11 @@
 
 Summary: Tool for managing bootable, immutable filesystem trees
 Name: ostree
-Version: 2024.4
-Release: 3%{?dist}
+Version: 2024.6
+Release: 1%{?dist}
 Source0: https://github.com/ostreedev/%{name}/releases/download/v%{version}/libostree-%{version}.tar.xz
 Source1: ostree-readonly-sysroot-migration
 Source2: ostree-readonly-sysroot-migration.service
-
-# https://issues.redhat.com/browse/RHEL-27199
-Patch0: 0001-bootloader-grub2-Don-t-do-anything-if-we-have-static.patch
 
 License: LGPLv2+
 URL: https://ostree.readthedocs.io/en/latest/
@@ -29,6 +26,7 @@ BuildRequires: gtk-doc
 BuildRequires: pkgconfig(zlib)
 BuildRequires: pkgconfig(libcurl)
 BuildRequires: openssl-devel
+BuildRequires: pkgconfig(composefs)
 # The tests still require soup
 BuildRequires: pkgconfig(libsoup-2.4)
 BuildRequires: libattr-devel
@@ -51,6 +49,7 @@ Requires: dracut
 Requires: /usr/bin/gpgv2
 Requires: systemd-units
 Requires: %{name}-libs%{?_isa} = %{?epoch:%{epoch}:}%{version}-%{release}
+Requires: composefs
 
 %description
 libostree is a shared library designed primarily for
@@ -180,6 +179,10 @@ find %{buildroot} -name '*.la' -delete
 %endif
 
 %changelog
+* Fri May 17 2024 Joseph Marrero <jmarrero@redhat.com> - 2024.6-1
+- https://github.com/ostreedev/ostree/releases/tag/v2024.6
+  Resolves: #RHEL-36770
+
 * Wed Feb 28 2024 Colin Walters <walters@verbum.org> - 2024.4-3
 - Backport
   https://github.com/ostreedev/ostree/pull/3205/commits/e47b37096343efa3bea8295f3f44c4dc90cc04e2
