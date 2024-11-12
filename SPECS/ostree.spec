@@ -7,11 +7,13 @@
 
 Summary: Tool for managing bootable, immutable filesystem trees
 Name: ostree
-Version: 2024.6
-Release: 1%{?dist}
+Version: 2024.7
+Release: 3%{?dist}
 Source0: https://github.com/ostreedev/%{name}/releases/download/v%{version}/libostree-%{version}.tar.xz
 Source1: ostree-readonly-sysroot-migration
 Source2: ostree-readonly-sysroot-migration.service
+
+Patch0: 0001-repo-NUL-terminate-readlinkat-result.patch
 
 License: LGPLv2+
 URL: https://ostree.readthedocs.io/en/latest/
@@ -179,9 +181,24 @@ find %{buildroot} -name '*.la' -delete
 %endif
 
 %changelog
-* Fri May 17 2024 Joseph Marrero <jmarrero@redhat.com> - 2024.6-1
+* Thu Sep 12 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.7-3
+- Rebuild to pickup changes to ostree-readonly-sysroot-migration
+  Resolves: #RHEL-58437
+
+* Wed Aug 14 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.7-2
+- Backport https://github.com/ostreedev/ostree/pull/3281
+  Resolves: #RHEL-50680
+
+* Fri Jul 26 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.7-1
+- https://github.com/ostreedev/ostree/releases/tag/v2024.7
+  Resolves: #RHEL-50680
+
+* Fri May 17 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.6-1
 - https://github.com/ostreedev/ostree/releases/tag/v2024.6
-  Resolves: #RHEL-36770
+  Resolves: #RHEL-35886
+
+* Thu Mar 14 2024 Colin Walters <walters@verbum.org> - 2024.5-2
+- https://github.com/ostreedev/ostree/releases/tag/v2024.5
 
 * Wed Feb 28 2024 Colin Walters <walters@verbum.org> - 2024.4-3
 - Backport
@@ -783,7 +800,7 @@ find %{buildroot} -name '*.la' -delete
 - Move trusted.gpg.d to main runtime package, where it should be
 
 * Fri Mar 07 2014 Colin Walters <walters@verbum.org> - 2014.2-2
-- Depend on gpgv2 
+- Depend on gpgv2
 - Resolves: #1073813
 
 * Sat Mar 01 2014 Colin Walters <walters@verbum.org> - 2014.2-1
