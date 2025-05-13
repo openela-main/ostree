@@ -7,7 +7,7 @@
 
 Summary: Tool for managing bootable, immutable filesystem trees
 Name: ostree
-Version: 2024.9
+Version: 2025.1
 Release: 1%{?dist}
 Source0: https://github.com/ostreedev/%{name}/releases/download/v%{version}/libostree-%{version}.tar.xz
 Source1: ostree-readonly-sysroot-migration
@@ -179,13 +179,17 @@ find %{buildroot} -name '*.la' -delete
 %endif
 
 %changelog
-* Thu Nov 21 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.9-1
-- Rebase to 2024.9
-  Resolves: #RHEL-68351
+* Mon Jan 20 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.1-1
+- Rebase to https://github.com/ostreedev/ostree/releases/tag/v2025.1
+  Resolves: #RHEL-73827
 
-* Thu Oct 17 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.7-4
-- Backport https://github.com/ostreedev/ostree/pull/3300
-  Resolves: #RHEL-62772
+* Tue Nov 05 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.9-1
+- Rebase to https://github.com/ostreedev/ostree/releases/tag/v2024.9
+  Resolves: #RHEL-62769
+
+* Thu Oct 17 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.8-1
+- Rebase to https://github.com/ostreedev/ostree/releases/tag/v2024.8
+  Resolves: #RHEL-62769
 
 * Thu Sep 12 2024 Joseph Marrero <jmarrero@fedoraproject.org> - 2024.7-3
 - Rebuild to pickup changes to ostree-readonly-sysroot-migration
