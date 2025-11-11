@@ -7,13 +7,11 @@
 
 Summary: Tool for managing bootable, immutable filesystem trees
 Name: ostree
-Version: 2025.4
-Release: 2%{?dist}
+Version: 2025.6
+Release: 1%{?dist}
 Source0: https://github.com/ostreedev/%{name}/releases/download/v%{version}/libostree-%{version}.tar.xz
 Source1: ostree-readonly-sysroot-migration
 Source2: ostree-readonly-sysroot-migration.service
-
-Patch0: 0001-deploy-Fix-path-to-aboot.cfg-in-BLS-files.patch
 
 License: LGPLv2+
 URL: https://ostree.readthedocs.io/en/latest/
@@ -139,9 +137,9 @@ find %{buildroot} -name '*.la' -delete
 %{_bindir}/rofiles-fuse
 %{_datadir}/ostree
 %{_datadir}/bash-completion/completions/*
-%dir %{_prefix}/lib/dracut/modules.d/98ostree
+%dir %{_prefix}/lib/dracut/modules.d/50ostree
 %{_prefix}/lib/systemd/system/ostree*.*
-%{_prefix}/lib/dracut/modules.d/98ostree/*
+%{_prefix}/lib/dracut/modules.d/50ostree/*
 %{_mandir}/man*/*.gz
 %{_prefix}/lib/systemd/system-generators/ostree-system-generator
 %exclude %{_sysconfdir}/grub.d/*ostree
@@ -181,6 +179,13 @@ find %{buildroot} -name '*.la' -delete
 %endif
 
 %changelog
+* Wed Sep 10 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.6-1
+- Rebase to 2025.6
+  Resolves: #RHEL-113643
+
+* Mon Aug 25 2025 Colin Walters <walters@verbum.org> - 2025.5-3
+- Update to 2025.5
+
 * Wed Aug 06 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.4-2
 - Backport https://github.com/ostreedev/ostree/pull/3493
   Resolves: #RHEL-107855
