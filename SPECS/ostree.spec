@@ -7,13 +7,13 @@
 
 Summary: Tool for managing bootable, immutable filesystem trees
 Name: ostree
-Version: 2025.2
+Version: 2025.4
 Release: 2%{?dist}
 Source0: https://github.com/ostreedev/%{name}/releases/download/v%{version}/libostree-%{version}.tar.xz
 Source1: ostree-readonly-sysroot-migration
 Source2: ostree-readonly-sysroot-migration.service
 
-Patch0: 0001-Add-root-transient-ro.patch
+Patch0: 0001-deploy-Fix-path-to-aboot.cfg-in-BLS-files.patch
 
 License: LGPLv2+
 URL: https://ostree.readthedocs.io/en/latest/
@@ -181,14 +181,17 @@ find %{buildroot} -name '*.la' -delete
 %endif
 
 %changelog
-* Thu Aug 14 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.2-2
-- Backport https://github.com/ostreedev/ostree/pull/3472
-  Backport https://github.com/ostreedev/ostree/pull/3473
-  Resolves: #RHEL-108923
+* Wed Aug 06 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.4-2
+- Backport https://github.com/ostreedev/ostree/pull/3493
+  Resolves: #RHEL-107855
 
-* Fri Jul 25 2025 Michael Armijo <marmijo@redhat.com> - 2025.2-1
+* Fri Jul 11 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.4-1
+- Rebase to https://github.com/ostreedev/ostree/releases/tag/v2025.4
+  Resolves: #RHEL-104888
+
+* Mon Mar 24 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.2-1
 - Rebase to https://github.com/ostreedev/ostree/releases/tag/v2025.2
-  Resolves: RHEL-93000
+  Resolves: #RHEL-84765
 
 * Mon Jan 20 2025 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.1-1
 - Rebase to https://github.com/ostreedev/ostree/releases/tag/v2025.1

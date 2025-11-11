@@ -1,0 +1,35 @@
+From 36995ef2b6dff343434016433a46242861549edd Mon Sep 17 00:00:00 2001
+From: Alexander Larsson <alexl@redhat.com>
+Date: Wed, 6 Aug 2025 12:16:34 +0200
+Subject: [PATCH] deploy: Fix path to aboot.cfg in BLS files
+
+The change in https://github.com/ostreedev/ostree/pull/3413/ was meant
+to change when the abootcfg option is set in the BLS file.  However,
+it also changed the value of this key, using the wrong directory
+(bootcsumdir instead of /usr/lib/ostree-boot).
+
+This means that during update, aboot-update gets the wrong path to the
+config and cannot correctly write the aboot partition.
+
+Signed-off-by: Alexander Larsson <alexl@redhat.com>
+---
+ src/libostree/ostree-sysroot-deploy.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/libostree/ostree-sysroot-deploy.c b/src/libostree/ostree-sysroot-deploy.c
+index bee899a3..e8f3ece5 100644
+--- a/src/libostree/ostree-sysroot-deploy.c
++++ b/src/libostree/ostree-sysroot-deploy.c
+@@ -2134,7 +2134,8 @@ install_deployment_kernel (OstreeSysroot *sysroot, int new_bootversion,
+       g_autofree char *aboot_relpath = g_strconcat ("/", bootcsumdir, "/", aboot_fn, NULL);
+       ostree_bootconfig_parser_set (bootconfig, "aboot", aboot_relpath);
+ 
+-      g_autofree char *abootcfg_relpath = g_strconcat ("/", bootcsumdir, "/aboot.cfg", NULL);
++      g_autofree char *abootcfg_relpath
++          = g_strconcat ("/", deployment_dirpath, "/usr/lib/ostree-boot/aboot.cfg", NULL);
+       ostree_bootconfig_parser_set (bootconfig, "abootcfg", abootcfg_relpath);
+     }
+ 
+-- 
+2.50.1
+
