@@ -7,13 +7,11 @@
 
 Summary: Tool for managing bootable, immutable filesystem trees
 Name: ostree
-Version: 2025.7
+Version: 2026.4
 Release: 1%{?dist}
 Source0: https://github.com/ostreedev/%{name}/releases/download/v%{version}/libostree-%{version}.tar.xz
 Source1: ostree-readonly-sysroot-migration
 Source2: ostree-readonly-sysroot-migration.service
-
-Patch0: 0001-state-overlay-Fix-ENODATA-handling-for-GLib-2.74.patch
 
 License: LGPLv2+
 URL: https://ostree.readthedocs.io/en/latest/
@@ -181,6 +179,21 @@ find %{buildroot} -name '*.la' -delete
 %endif
 
 %changelog
+* Fri Aug 21 2026 Joseph Marrero Corchado <jmarrero@redhat.com> - 2026.4-1
+- Rebase to 2026.4
+  Release https://github.com/ostreedev/ostree/releases/tag/v2026.4
+  Resolves: #RHEL-246612
+
+* Thu Aug 06 2026 Joseph Marrero Corchado <jmarrero@redhat.com> - 2026.3-1
+- Rebase to 2026.3
+  Release https://github.com/ostreedev/ostree/releases/tag/v2026.3
+  Resolves: #RHEL-234366
+
+* Fri Apr 10 2026 Joseph Marrero <jmarrero@fedoraproject.org> - 2026.1-1
+- Rebase to 2026.1
+  Release https://github.com/ostreedev/ostree/releases/tag/v2026.1
+  Resolves: #RHEL-167078
+
 * Mon Jan 26 2026 Joseph Marrero <jmarrero@fedoraproject.org> - 2025.7-1
 - Rebase to 2025.7
   Backport https://github.com/ostreedev/ostree/pull/3555
